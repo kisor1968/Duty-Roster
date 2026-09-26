@@ -182,12 +182,15 @@ if uploaded_file is not None:
 
     st.markdown("---")
     
-    # --- GL (Guest Lecturers) OPT-IN MANAGER ---
+    # --- GL (Guest/General Lecturers) OPT-IN MANAGER ---
     st.subheader("👥 GL (Guest Lecturer) Opt-In Manager")
     st.markdown("By default, GL teachers are **excluded** from duty assignments unless explicitly opted-in below.")
     
-    day_counts = teachers_df.groupby("Teacher/Entry")["Day"].nunique()
-    gl_teachers = sorted(day_counts[day_counts == 6].index.tolist())
+    # Identify GL teachers using the 'Category' column containing 'GL'
+    if "Category" in teachers_df.columns:
+        gl_teachers = sorted(teachers_df[teachers_df["Category"].astype(str).str.contains("GL", case=False, na=False)]["Teacher/Entry"].unique().tolist())
+    else:
+        gl_teachers = []
     
     if "gl_opted_in" not in st.session_state:
         st.session_state.gl_opted_in = []
