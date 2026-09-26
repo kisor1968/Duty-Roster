@@ -182,7 +182,7 @@ if uploaded_file is not None:
 
     st.markdown("---")
     
-    # --- GL (Guest/General Lecturers) OPT-IN MANAGER ---
+    # --- GL (Guest Lecturers) OPT-IN MANAGER ---
     st.subheader("👥 GL (Guest Lecturer) Opt-In Manager")
     st.markdown("By default, GL teachers are **excluded** from duty assignments unless explicitly opted-in below.")
     
