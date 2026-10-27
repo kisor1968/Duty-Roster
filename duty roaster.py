@@ -183,10 +183,9 @@ if uploaded_file is not None:
     st.markdown("---")
     
     # --- GL (Guest/General Lecturers) OPT-IN MANAGER ---
-    st.subheader("👥 GL (Guest Lecturer) Opt-In Manager")
-    st.markdown("By default, GL teachers are **excluded** from duty assignments unless explicitly opted-in below.")
+    st.subheader("👥 GL (Guest Lecturer) Opt-In & Auto-Fallback Manager")
+    st.markdown("GL teachers are prioritized behind regular faculty. If regular faculty available on a specific date are insufficient to meet the required quota, available GLs are automatically included.")
     
-    # Identify GL teachers using the 'Category' column containing 'GL'
     if "Category" in teachers_df.columns:
         gl_teachers = sorted(teachers_df[teachers_df["Category"].astype(str).str.contains("GL", case=False, na=False)]["Teacher/Entry"].unique().tolist())
     else:
@@ -196,10 +195,10 @@ if uploaded_file is not None:
         st.session_state.gl_opted_in = []
 
     selected_gls_to_opt = st.multiselect(
-        "Select GL teachers to opt-in for exam duties:",
+        "Select GL teachers to explicitly opt-in for priority exam duties:",
         options=gl_teachers,
         default=[t for t in st.session_state.gl_opted_in if t in gl_teachers],
-        help="Only GL teachers appear here. Unselected GL teachers will be excluded from the assignment pool."
+        help="Explicitly opted-in GLs will be considered alongside regular faculty."
     )
     st.session_state.gl_opted_in = selected_gls_to_opt
 
@@ -396,35 +395,66 @@ if uploaded_file is not None:
                     if required_count <= 0:
                         continue
 
-                    available_teachers = []
+                    # 1. Filter out unavailable teachers on this specific date
+                    avail_regular = []
+                    avail_gl = []
+
                     for t in day_pool:
+                        # Check emergency leave
                         is_on_leave = any(l["Teacher"] == t and l["Date"] == date_str for l in active_leaves)
                         if is_on_leave:
                             continue
                         
-                        is_gl = t in gl_teachers
-                        if is_gl and t not in opted_gls:
+                        # Check CSV date-specific availability column if present
+                        is_csv_available = True
+                        if date_str in teachers_df.columns:
+                            match_row = teachers_df[teachers_df["Teacher/Entry"] == t]
+                            if not match_row.empty:
+                                val = str(match_row[date_str].values[0]).strip().lower()
+                                if val in ["no", "absent", "unavailable", "0", "false", "leave", "-"]:
+                                    is_csv_available = False
+                        if not is_csv_available:
                             continue
 
-                        available_teachers.append(t)
+                        if t in gl_teachers:
+                            avail_gl.append(t)
+                        else:
+                            avail_regular.append(t)
 
-                    if len(available_teachers) < required_count:
-                        st.error(f"❌ Not enough available teachers on {day_name} ({date_str}) for {half}. Required: {required_count}, Available: {len(available_teachers)}")
-                        generation_failed = True
-                        break
-
+                    # Sorting function based on preference and current duty count
                     def sort_key(teacher_name):
                         pref = preference_map.get(teacher_name, "No Preference")
                         pref_score = 0 if (pref == half or pref == "No Preference") else 1
-                        return (pref_score, teacher_duty_counts[teacher_name])
+                        return (pref_score, teacher_duty_counts.get(teacher_name, 0))
 
-                    available_teachers.sort(key=sort_key)
-                    random.shuffle(available_teachers)
-                    available_teachers.sort(key=lambda t: teacher_duty_counts[t])
+                    avail_regular.sort(key=sort_key)
+                    
+                    # Candidate pool starts with available regular teachers
+                    candidates = avail_regular.copy()
 
-                    assigned = available_teachers[:required_count]
+                    # 2. If regular teachers are not enough, include GL teachers automatically (opted-in first, then others)
+                    if len(candidates) < required_count:
+                        # Sort available GLs by preference and duty count
+                        avail_gl.sort(key=lambda g: (0 if g in opted_gls else 1, sort_key(g)[0], sort_key(g)[1]))
+                        for g in avail_gl:
+                            if g not in candidates:
+                                candidates.append(g)
+
+                    # Final sorting with random tie-breaker for fairness
+                    candidates.sort(key=sort_key)
+                    random.shuffle(candidates)
+                    candidates.sort(key=lambda t: teacher_duty_counts.get(t, 0))
+
+                    if len(candidates) < required_count:
+                        st.error(f"❌ Not enough available teachers (including GLs) on {day_name} ({date_str}) for {half}. Required: {required_count}, Available: {len(candidates)}")
+                        generation_failed = True
+                        break
+
+                    assigned = candidates[:required_count]
 
                     for teacher in assigned:
+                        if teacher not in teacher_duty_counts:
+                            teacher_duty_counts[teacher] = 0
                         teacher_duty_counts[teacher] += 1
                         roster_records.append({
                             "Date": date_str,
@@ -451,7 +481,6 @@ if uploaded_file is not None:
 
         st.subheader("📊 Overall Duty Distribution Summary")
         
-        # Fixed Altair chart with clear domain bounds and integer-only tick steps
         max_duties = int(st.session_state.summary_df["Total Duties Assigned"].max())
         upper_bound = max(2, max_duties + 1)
         
@@ -494,9 +523,9 @@ else:
 st.markdown("---")
 st.subheader("❓ Frequently Asked Questions (FAQ)")
 
-faq_expander1 = st.expander("1. Why are Guest Lecturers (GL) excluded by default?")
+faq_expander1 = st.expander("1. How are unavailable teachers and Guest Lecturers (GL) handled?")
 with faq_expander1:
-    st.write("By institutional guidelines, Guest Lecturers are automatically filtered out from mandatory duties unless they are explicitly opted-in using the **GL Opt-In Manager** panel.")
+    st.write("Teachers marked unavailable via emergency leave or date columns are strictly excluded. If regular available faculty members are insufficient to meet the required quota for a session, available GLs are automatically included as fallback.")
 
 faq_expander2 = st.expander("2. How does the app handle workload balancing?")
 with faq_expander2:
