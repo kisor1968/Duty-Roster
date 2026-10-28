@@ -38,7 +38,7 @@ st.markdown("""
         transition: all 0.3s ease;
     }
     div.stButton > button:hover {
-        background: linear-gradient(135deg, #438a5e 0%, #2b583f 100%);
+        background: linear-gradient(135deg, #438a5e 100%, #2b583f 100%);
         box-shadow: 0 6px 8px rgba(0,0,0,0.15);
         transform: translateY(-1px);
     }
@@ -66,25 +66,30 @@ with col_info:
 
 st.markdown("<hr style='margin-top: 5px; margin-bottom: 25px; border: 1px solid #d0e1d4;'>", unsafe_allow_html=True)
 
-# --- SIDEBAR: Guide & Instructions + Upload ---
+# --- SIDEBAR: Guide & Instructions + Uploads ---
 st.sidebar.header("📖 User Guide & Instructions")
 st.sidebar.markdown("""
-1. **Upload CSV**: Upload your teacher availability dataset via the file uploader below.
-2. **Add Dates**: Pick examination dates on the main screen and click **Add Exam Date**.
-3. **Set Quotas**: Configure session schedules (*Both Halves*, *1st Half Only*, *2nd Half Only*) and invigilator counts.
-4. **Manage Opt-Ins & Leaves**: Use the GL opt-in tool, emergency leave selector, and half-day preferences.
-5. **Generate & Download**: Click **Generate Duty Roster** to view results, download both the Word document and Excel duty summary file seamlessly.
+1. **Upload Teacher CSV**: Upload your faculty availability dataset.
+2. **Upload Previous Roster (Optional)**: Upload past duty chart to carry over and balance existing duty counts.
+3. **Add Dates**: Pick examination dates on the main screen and click **Add Exam Date**.
+4. **Set Quotas**: Configure session schedules and invigilator counts.
+5. **Manage Opt-Ins & Leaves**: Configure GLs, emergency leaves, and shift preferences.
+6. **Generate**: Click **Generate Duty Roster** to view balanced results.
 """)
 
 st.sidebar.markdown("---")
 st.sidebar.header("1. Teacher Data Upload")
 uploaded_file = st.sidebar.file_uploader("Upload Teacher Availability CSV", type=["csv"])
 
+st.sidebar.markdown("---")
+st.sidebar.header("2. Previous Duty Roster (Optional)")
+prev_uploaded_file = st.sidebar.file_uploader("Upload Past Duty Chart (CSV/Excel) to Carry Over Counts", type=["csv", "xlsx"])
+
 # --- MAIN APP INTERFACE ---
 if uploaded_file is not None:
     teachers_df = pd.read_csv(uploaded_file)
     
-    # Standardize column headers to avoid KeyError from minor naming variations
+    # Standardize column headers to avoid KeyError
     teachers_df.columns = teachers_df.columns.str.strip()
     if "Teacher/Entry" not in teachers_df.columns and "Teacher Name" in teachers_df.columns:
         teachers_df.rename(columns={"Teacher Name": "Teacher/Entry"}, inplace=True)
@@ -92,6 +97,33 @@ if uploaded_file is not None:
         teachers_df.rename(columns={"Name": "Teacher/Entry"}, inplace=True)
 
     all_teachers = sorted(teachers_df["Teacher/Entry"].unique().tolist())
+
+    # --- PROCESS PREVIOUS ROSTER COUNTS IF UPLOADED ---
+    initial_duty_counts = {name: 0 for name in all_teachers}
+    if prev_uploaded_file is not None:
+        try:
+            if prev_uploaded_file.name.endswith('.csv'):
+                prev_df = pd.read_csv(prev_uploaded_file)
+            else:
+                prev_df = pd.read_excel(prev_uploaded_file)
+            
+            # Find column containing invigilator names
+            invig_col = None
+            for col in ["Invigilator Name", "Teacher Name", "Teacher", "Name"]:
+                if col in prev_df.columns:
+                    invig_col = col
+                    break
+            
+            if invig_col:
+                prev_counts = prev_df[invig_col].value_counts().to_dict()
+                for t_name, count in prev_counts.items():
+                    if t_name in initial_duty_counts:
+                        initial_duty_counts[t_name] = int(count)
+                st.sidebar.success(f"✅ Carry-over counts loaded successfully for {len(prev_counts)} teachers!")
+            else:
+                st.sidebar.warning("⚠️ Could not find 'Invigilator Name' column in the uploaded previous roster.")
+        except Exception as e:
+            st.sidebar.error(f"Error reading previous roster file: {e}")
 
     st.markdown("---")
     
@@ -376,7 +408,8 @@ if uploaded_file is not None:
             st.session_state.roster_generated = False
         else:
             roster_records = []
-            teacher_duty_counts = {name: 0 for name in all_teachers}
+            # Initialize with pre-seeded counts from previous roster upload
+            teacher_duty_counts = initial_duty_counts.copy()
             generation_failed = False
 
             active_leaves = st.session_state.get("emergency_leaves", [])
@@ -429,8 +462,7 @@ if uploaded_file is not None:
                         else:
                             avail_regular.append(t)
 
-                    # --- STRICT PREFERENCE-BASED SELECTION LOGIC ---
-                    # Separate regular teachers into preferred/neutral vs unpreferred for this half
+                    # --- STRICT PREFERENCE-BASED & CUMULATIVE BALANCE SELECTION ---
                     preferred_or_neutral_regular = []
                     unpreferred_regular = []
 
@@ -441,19 +473,16 @@ if uploaded_file is not None:
                         else:
                             unpreferred_regular.append(t)
 
-                    # Sort both pools by current duty count (ascending) to maintain equal distribution
+                    # Sort by cumulative duty count (including past history) to prioritize unassigned/under-assigned teachers
                     preferred_or_neutral_regular.sort(key=lambda t: teacher_duty_counts.get(t, 0))
                     unpreferred_regular.sort(key=lambda t: teacher_duty_counts.get(t, 0))
 
-                    # Combine: fill quota primarily from preferred/neutral regular faculty
                     candidates = preferred_or_neutral_regular.copy()
 
-                    # If quota not met, fill remaining regular slots from unpreferred regular faculty
                     if len(candidates) < required_count:
                         needed = required_count - len(candidates)
                         candidates.extend(unpreferred_regular[:needed])
 
-                    # If still not enough, automatically include available GLs (opted-in first)
                     if len(candidates) < required_count:
                         avail_gl.sort(key=lambda g: (0 if g in opted_gls else 1, teacher_duty_counts.get(g, 0)))
                         for g in avail_gl:
@@ -465,7 +494,6 @@ if uploaded_file is not None:
                         generation_failed = True
                         break
 
-                    # Final assignment of exact required count
                     assigned = candidates[:required_count]
 
                     for teacher in assigned:
@@ -491,11 +519,11 @@ if uploaded_file is not None:
 
     # --- Persistently Display Results & Download Buttons from Session State ---
     if st.session_state.get("roster_generated", False):
-        st.success("✅ Duty Roster Generated Successfully!")
+        st.success("✅ Duty Roster Generated Successfully (Cumulative Balances Included)!")
         st.subheader("📅 Comprehensive Exam Roster")
         st.dataframe(st.session_state.roster_df, use_container_width=True)
 
-        st.subheader("📊 Overall Duty Distribution Summary")
+        st.subheader("📊 Overall Cumulative Duty Distribution Summary")
         
         max_duties = int(st.session_state.summary_df["Total Duties Assigned"].max())
         upper_bound = max(2, max_duties + 1)
@@ -509,7 +537,7 @@ if uploaded_file is not None:
                     values=list(range(upper_bound + 1))
                 ),
                 scale=alt.Scale(domain=[0, upper_bound]),
-                title='Total Duties Assigned'
+                title='Total Cumulative Duties Assigned'
             )
         ).properties(height=400)
         
@@ -539,21 +567,21 @@ else:
 st.markdown("---")
 st.subheader("❓ Frequently Asked Questions (FAQ)")
 
-faq_expander1 = st.expander("1. How are half-day preferences handled?")
+faq_expander1 = st.expander("1. How does uploading a previous roster work?")
 with faq_expander1:
-    st.write("The allocation algorithm strictly prioritizes teachers whose preference matches the current half or who have 'No Preference'. Teachers with opposing shift preferences are only assigned if there is a shortage of available faculty for that session.")
+    st.write("By uploading your past duty chart CSV or Excel file in the sidebar, the application reads existing assignments and seeds each teacher's starting duty count. New duties are then automatically assigned to teachers with fewer previous duties to maintain a perfectly even cumulative distribution.")
 
-faq_expander2 = st.expander("2. How does the app handle workload balancing?")
+faq_expander2 = st.expander("2. How are half-day preferences handled?")
 with faq_expander2:
-    st.write("Within the preferred/neutral candidate pool, the app systematically prioritizes teachers with fewer accumulated duties to ensure a balanced distribution.")
+    st.write("The allocation algorithm strictly prioritizes teachers whose preference matches the current half or who have 'No Preference'. Teachers with opposing shift preferences are only assigned if there is a shortage of available faculty for that session.")
 
 faq_expander3 = st.expander("3. Can I customize how many teachers are needed per shift?")
 with faq_expander3:
-    st.write("Yes! Once exam dates are added, a configuration table appears allowing you to modify active session schedules (*Both Halves*, *1st Half Only*, *2nd Half Only*) and change the required invigilator count per half independently.")
+    st.write("Yes! Once exam dates are added, a configuration table appears allowing you to modify active session schedules and required invigilator counts independently.")
 
 faq_expander4 = st.expander("4. What happens if a teacher takes emergency leave?")
 with faq_expander4:
-    st.write("You can log emergency leave using the **Emergency Leave Manager**. The application will instantly omit that teacher from the available pool for that specific date without altering other dates.")
+    st.write("You can log emergency leave using the **Emergency Leave Manager**, and the application will instantly omit that teacher from the available pool for that specific date.")
 
 # --- COPYRIGHT FOOTER ---
 st.markdown("---")
