@@ -83,6 +83,14 @@ uploaded_file = st.sidebar.file_uploader("Upload Teacher Availability CSV", type
 # --- MAIN APP INTERFACE ---
 if uploaded_file is not None:
     teachers_df = pd.read_csv(uploaded_file)
+    
+    # Standardize column headers to avoid KeyError from minor naming variations
+    teachers_df.columns = teachers_df.columns.str.strip()
+    if "Teacher/Entry" not in teachers_df.columns and "Teacher Name" in teachers_df.columns:
+        teachers_df.rename(columns={"Teacher Name": "Teacher/Entry"}, inplace=True)
+    elif "Teacher/Entry" not in teachers_df.columns and "Name" in teachers_df.columns:
+        teachers_df.rename(columns={"Name": "Teacher/Entry"}, inplace=True)
+
     all_teachers = sorted(teachers_df["Teacher/Entry"].unique().tolist())
 
     st.markdown("---")
@@ -395,7 +403,7 @@ if uploaded_file is not None:
                     if required_count <= 0:
                         continue
 
-                    # 1. Filter out unavailable teachers on this specific date
+                    # Filter out unavailable teachers on this specific date
                     avail_regular = []
                     avail_gl = []
 
@@ -421,35 +429,43 @@ if uploaded_file is not None:
                         else:
                             avail_regular.append(t)
 
-                    # Sorting function based on preference and current duty count
-                    def sort_key(teacher_name):
-                        pref = preference_map.get(teacher_name, "No Preference")
-                        pref_score = 0 if (pref == half or pref == "No Preference") else 1
-                        return (pref_score, teacher_duty_counts.get(teacher_name, 0))
+                    # --- STRICT PREFERENCE-BASED SELECTION LOGIC ---
+                    # Separate regular teachers into preferred/neutral vs unpreferred for this half
+                    preferred_or_neutral_regular = []
+                    unpreferred_regular = []
 
-                    avail_regular.sort(key=sort_key)
-                    
-                    # Candidate pool starts with available regular teachers
-                    candidates = avail_regular.copy()
+                    for t in avail_regular:
+                        pref = preference_map.get(t, "No Preference")
+                        if pref == half or pref == "No Preference":
+                            preferred_or_neutral_regular.append(t)
+                        else:
+                            unpreferred_regular.append(t)
 
-                    # 2. If regular teachers are not enough, include GL teachers automatically (opted-in first, then others)
+                    # Sort both pools by current duty count (ascending) to maintain equal distribution
+                    preferred_or_neutral_regular.sort(key=lambda t: teacher_duty_counts.get(t, 0))
+                    unpreferred_regular.sort(key=lambda t: teacher_duty_counts.get(t, 0))
+
+                    # Combine: fill quota primarily from preferred/neutral regular faculty
+                    candidates = preferred_or_neutral_regular.copy()
+
+                    # If quota not met, fill remaining regular slots from unpreferred regular faculty
                     if len(candidates) < required_count:
-                        # Sort available GLs by preference and duty count
-                        avail_gl.sort(key=lambda g: (0 if g in opted_gls else 1, sort_key(g)[0], sort_key(g)[1]))
+                        needed = required_count - len(candidates)
+                        candidates.extend(unpreferred_regular[:needed])
+
+                    # If still not enough, automatically include available GLs (opted-in first)
+                    if len(candidates) < required_count:
+                        avail_gl.sort(key=lambda g: (0 if g in opted_gls else 1, teacher_duty_counts.get(g, 0)))
                         for g in avail_gl:
                             if g not in candidates:
                                 candidates.append(g)
-
-                    # Final sorting with random tie-breaker for fairness
-                    candidates.sort(key=sort_key)
-                    random.shuffle(candidates)
-                    candidates.sort(key=lambda t: teacher_duty_counts.get(t, 0))
 
                     if len(candidates) < required_count:
                         st.error(f"❌ Not enough available teachers (including GLs) on {day_name} ({date_str}) for {half}. Required: {required_count}, Available: {len(candidates)}")
                         generation_failed = True
                         break
 
+                    # Final assignment of exact required count
                     assigned = candidates[:required_count]
 
                     for teacher in assigned:
@@ -523,13 +539,13 @@ else:
 st.markdown("---")
 st.subheader("❓ Frequently Asked Questions (FAQ)")
 
-faq_expander1 = st.expander("1. How are unavailable teachers and Guest Lecturers (GL) handled?")
+faq_expander1 = st.expander("1. How are half-day preferences handled?")
 with faq_expander1:
-    st.write("Teachers marked unavailable via emergency leave or date columns are strictly excluded. If regular available faculty members are insufficient to meet the required quota for a session, available GLs are automatically included as fallback.")
+    st.write("The allocation algorithm strictly prioritizes teachers whose preference matches the current half or who have 'No Preference'. Teachers with opposing shift preferences are only assigned if there is a shortage of available faculty for that session.")
 
 faq_expander2 = st.expander("2. How does the app handle workload balancing?")
 with faq_expander2:
-    st.write("The allocation algorithm systematically tracks total duties assigned to each faculty member, prioritizing those with fewer accumulated duties while respecting half-day shift preferences.")
+    st.write("Within the preferred/neutral candidate pool, the app systematically prioritizes teachers with fewer accumulated duties to ensure a balanced distribution.")
 
 faq_expander3 = st.expander("3. Can I customize how many teachers are needed per shift?")
 with faq_expander3:
