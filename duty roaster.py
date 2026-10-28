@@ -38,7 +38,7 @@ st.markdown("""
         transition: all 0.3s ease;
     }
     div.stButton > button:hover {
-        background: linear-gradient(135deg, #438a5e 100%, #2b583f 100%);
+        background: linear-gradient(135deg, #438a5e 0%, #2b583f 100%);
         box-shadow: 0 6px 8px rgba(0,0,0,0.15);
         transform: translateY(-1px);
     }
@@ -70,7 +70,7 @@ st.markdown("<hr style='margin-top: 5px; margin-bottom: 25px; border: 1px solid 
 st.sidebar.header("📖 User Guide & Instructions")
 st.sidebar.markdown("""
 1. **Upload Teacher CSV**: Upload your faculty availability dataset.
-2. **Upload Previous Roster (Optional)**: Upload past duty chart to carry over and balance existing duty counts.
+2. **Upload Previous Roster (Optional)**: Upload past duty chart/summary to carry over counts for subsequent exam sets.
 3. **Add Dates**: Pick examination dates on the main screen and click **Add Exam Date**.
 4. **Set Quotas**: Configure session schedules and invigilator counts.
 5. **Manage Opt-Ins & Leaves**: Configure GLs, emergency leaves, and shift preferences.
@@ -83,7 +83,7 @@ uploaded_file = st.sidebar.file_uploader("Upload Teacher Availability CSV", type
 
 st.sidebar.markdown("---")
 st.sidebar.header("2. Previous Duty Roster (Optional)")
-prev_uploaded_file = st.sidebar.file_uploader("Upload Past Duty Chart (CSV/Excel) to Carry Over Counts", type=["csv", "xlsx"])
+prev_uploaded_file = st.sidebar.file_uploader("Upload Past Duty Chart / Summary (CSV/Excel) to Carry Over Counts", type=["csv", "xlsx"])
 
 # --- MAIN APP INTERFACE ---
 if uploaded_file is not None:
@@ -107,21 +107,34 @@ if uploaded_file is not None:
             else:
                 prev_df = pd.read_excel(prev_uploaded_file)
             
-            # Find column containing invigilator names
-            invig_col = None
-            for col in ["Invigilator Name", "Teacher Name", "Teacher", "Name"]:
+            # Find column containing invigilator names and counts if summary
+            name_col = None
+            count_col = None
+            for col in ["Teacher Name", "Invigilator Name", "Teacher", "Name"]:
                 if col in prev_df.columns:
-                    invig_col = col
+                    name_col = col
+                    break
+            for col in ["Total Duties Assigned", "Duties", "Count", "Total"]:
+                if col in prev_df.columns:
+                    count_col = col
                     break
             
-            if invig_col:
-                prev_counts = prev_df[invig_col].value_counts().to_dict()
+            if name_col and count_col:
+                for _, row in prev_df.iterrows():
+                    t_name = str(row[name_col]).strip()
+                    t_count = int(row[count_col])
+                    if t_name in initial_duty_counts:
+                        initial_duty_counts[t_name] = t_count
+                st.sidebar.success(f"✅ Cumulative counts successfully loaded from previous summary!")
+            elif name_col:
+                # If it's a full roster sheet instead of a summary
+                prev_counts = prev_df[name_col].value_counts().to_dict()
                 for t_name, count in prev_counts.items():
                     if t_name in initial_duty_counts:
                         initial_duty_counts[t_name] = int(count)
-                st.sidebar.success(f"✅ Carry-over counts loaded successfully for {len(prev_counts)} teachers!")
+                st.sidebar.success(f"✅ Carry-over counts calculated from past roster for {len(prev_counts)} teachers!")
             else:
-                st.sidebar.warning("⚠️ Could not find 'Invigilator Name' column in the uploaded previous roster.")
+                st.sidebar.warning("⚠️ Could not recognize columns in the uploaded previous file.")
         except Exception as e:
             st.sidebar.error(f"Error reading previous roster file: {e}")
 
@@ -408,7 +421,7 @@ if uploaded_file is not None:
             st.session_state.roster_generated = False
         else:
             roster_records = []
-            # Initialize with pre-seeded counts from previous roster upload
+            # Seed starting counts with pre-loaded previous roster counts
             teacher_duty_counts = initial_duty_counts.copy()
             generation_failed = False
 
@@ -569,7 +582,7 @@ st.subheader("❓ Frequently Asked Questions (FAQ)")
 
 faq_expander1 = st.expander("1. How does uploading a previous roster work?")
 with faq_expander1:
-    st.write("By uploading your past duty chart CSV or Excel file in the sidebar, the application reads existing assignments and seeds each teacher's starting duty count. New duties are then automatically assigned to teachers with fewer previous duties to maintain a perfectly even cumulative distribution.")
+    st.write("By uploading your past duty chart or summary Excel/CSV file in the sidebar, the application reads existing assignments and seeds each teacher's starting duty count. New duties are then automatically assigned to teachers with fewer previous duties to maintain a perfectly even cumulative distribution.")
 
 faq_expander2 = st.expander("2. How are half-day preferences handled?")
 with faq_expander2:
